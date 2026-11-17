@@ -1,0 +1,9 @@
+{
+  "id": "timetool",
+  "name": "TimeTool — время и даты",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Калькулятор времени и дат: разница между моментами, сдвиг даты, сумма интервалов, отсчёт до даты. Результат вставляется в заметку.",
+  "author": "Re-username",
+  "isDesktopOnly": false
+}
