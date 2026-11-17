@@ -260,7 +260,94 @@ var TimeToolPlugin = class extends import_obsidian.Plugin {
       name: "\u0421\u0443\u043C\u043C\u0430 \u0438\u043D\u0442\u0435\u0440\u0432\u0430\u043B\u043E\u0432 (\u0441\u043C\u0435\u043D\u044B)",
       editorCallback: (editor) => new IntervalsModal(this.app, editor).open()
     });
+    this.registerMarkdownCodeBlockProcessor("timetool", (source, el) => {
+      liveRender(el, () => renderSpec(parseSpec(source)));
+    });
+    this.registerMarkdownPostProcessor((el) => {
+      for (const code of Array.from(el.querySelectorAll("code"))) {
+        const text = code.textContent || "";
+        if (!text.startsWith("timetool:") || code.closest("pre")) continue;
+        const payload = text.slice("timetool:".length);
+        const sep = payload.indexOf(":");
+        const type = sep > 0 ? payload.slice(0, sep) : "until";
+        const rest = sep > 0 ? payload.slice(sep + 1) : payload;
+        let spec = { type };
+        if (type === "until") spec.date = rest;
+        else if (type === "diff") {
+          const [a, b] = rest.split(",");
+          spec.a = a;
+          spec.b = b;
+        } else if (type === "shift") {
+          const [base, value, unit, sign] = rest.split(",");
+          spec = { type, base, value, unit: unit || "days", sign: sign || "+" };
+        }
+        const span = document.createElement("span");
+        code.parentNode?.replaceChild(span, code);
+        liveRender(span, () => renderSpec(spec));
+      }
+    });
   }
   onunload() {
   }
 };
+function parseSpec(source) {
+  const r = {};
+  for (const line of source.split("\n")) {
+    const i = line.indexOf(":");
+    if (i > 0) r[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+  }
+  return r;
+}
+function fmtDateTime(d) {
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function renderSpec(spec) {
+  const type = (spec.type || "until").toLowerCase();
+  if (type === "clock") return fmtDateTime(/* @__PURE__ */ new Date());
+  if (type === "until") {
+    const raw = (spec.date || "") + (spec.time ? "T" + spec.time : "T00:00:00");
+    const target = new Date(raw);
+    if (isNaN(target.getTime())) return "timetool: \u043D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0434\u0430\u0442\u0430";
+    const now = /* @__PURE__ */ new Date();
+    const ms = target.getTime() - now.getTime();
+    if (Math.abs(ms) < 6e4) return `**${spec.name || "\u0421\u043E\u0431\u044B\u0442\u0438\u0435"}**: \u0441\u0435\u0439\u0447\u0430\u0441!`;
+    const d = new Date(now.getFullYear(), 0, 0);
+    const days = Math.floor(Math.abs(ms) / 864e5);
+    const hours = Math.floor(Math.abs(ms) % 864e5 / 36e5);
+    const head = spec.name ? `**${spec.name}**` : `\u0434\u043E ${fmtDateTime(target)}`;
+    return ms > 0 ? `${head}: \u043E\u0441\u0442\u0430\u043B\u043E\u0441\u044C ${days > 0 ? days + " " + plural(days, "\u0434\u0435\u043D\u044C", "\u0434\u043D\u044F", "\u0434\u043D\u0435\u0439") + " " : ""}${hours} ${plural(hours, "\u0447\u0430\u0441", "\u0447\u0430\u0441\u0430", "\u0447\u0430\u0441\u043E\u0432")}` : `${head}: \u043F\u0440\u043E\u0448\u043B\u043E ${formatDiff(ms)} \u043D\u0430\u0437\u0430\u0434`;
+  }
+  if (type === "diff") {
+    const a = new Date(spec.a || ""), b = new Date(spec.b || "");
+    if (isNaN(a.getTime()) || isNaN(b.getTime())) return "timetool: \u0443\u043A\u0430\u0436\u0438\u0442\u0435 a \u0438 b (YYYY-MM-DD)";
+    return `\u0440\u0430\u0437\u043D\u0438\u0446\u0430: ${formatDiff(b.getTime() - a.getTime())}`;
+  }
+  if (type === "shift") {
+    const base = new Date(spec.base || "");
+    if (isNaN(base.getTime())) return "timetool: \u0443\u043A\u0430\u0436\u0438\u0442\u0435 base";
+    const value = parseInt(spec.value || "0") || 0;
+    const unit = spec.unit || "days";
+    const r = new Date(base);
+    const n = (spec.sign === "-" ? -1 : 1) * value;
+    if (unit === "months") r.setMonth(r.getMonth() + n);
+    else if (unit === "years") r.setFullYear(r.getFullYear() + n);
+    else {
+      const mult = { minutes: 6e4, hours: 36e5, days: 864e5, weeks: 6048e5 };
+      r.setTime(r.getTime() + n * (mult[unit] || 864e5));
+    }
+    return `${fmtDateTime(base)} ${spec.sign === "-" ? "\u2212" : "+"} ${value} ${unit} = **${fmtDateTime(r)}**`;
+  }
+  return "timetool: \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 type (until/diff/shift/clock)";
+}
+function liveRender(el, compute) {
+  const target = el.createSpan({ cls: "timetool-live" });
+  target.textContent = compute();
+  const iv = window.setInterval(() => {
+    if (!target.isConnected) {
+      window.clearInterval(iv);
+      return;
+    }
+    const t = compute();
+    if (target.textContent !== t) target.textContent = t;
+  }, 1e3);
+}

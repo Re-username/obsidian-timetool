@@ -217,6 +217,108 @@ export default class TimeToolPlugin extends Plugin {
       name: "Сумма интервалов (смены)",
       editorCallback: (editor) => new IntervalsModal(this.app, editor).open(),
     });
+
+    // живой блок:
+    // ```timetool
+    // type: until
+    // name: Зарплата
+    // date: 2026-12-25
+    // time: 09:00
+    // ```
+    this.registerMarkdownCodeBlockProcessor("timetool", (source, el) => {
+      liveRender(el, () => renderSpec(parseSpec(source)));
+    });
+
+    // inline: `timetool:until:2026-12-25` или `timetool:diff:2026-01-01,2026-12-31`
+    this.registerMarkdownPostProcessor((el) => {
+      for (const code of Array.from(el.querySelectorAll("code"))) {
+        const text = code.textContent || "";
+        if (!text.startsWith("timetool:") || code.closest("pre")) continue;
+        const payload = text.slice("timetool:".length);
+        const sep = payload.indexOf(":");
+        const type = sep > 0 ? payload.slice(0, sep) : "until";
+        const rest = sep > 0 ? payload.slice(sep + 1) : payload;
+        let spec: Record<string, string> = { type };
+        if (type === "until") spec.date = rest;
+        else if (type === "diff") {
+          const [a, b] = rest.split(",");
+          spec.a = a; spec.b = b;
+        } else if (type === "shift") {
+          const [base, value, unit, sign] = rest.split(",");
+          spec = { type, base, value, unit: unit || "days", sign: sign || "+" };
+        }
+        const span = document.createElement("span");
+        code.parentNode?.replaceChild(span, code);
+        liveRender(span, () => renderSpec(spec));
+      }
+    });
   }
   onunload() {}
+}
+
+/* ---------- живые код-блоки и inline ---------- */
+
+function parseSpec(source: string): Record<string, string> {
+  const r: Record<string, string> = {};
+  for (const line of source.split("\n")) {
+    const i = line.indexOf(":");
+    if (i > 0) r[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+  }
+  return r;
+}
+
+function fmtDateTime(d: Date): string {
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function renderSpec(spec: Record<string, string>): string {
+  const type = (spec.type || "until").toLowerCase();
+  if (type === "clock") return fmtDateTime(new Date());
+  if (type === "until") {
+    const raw = (spec.date || "") + (spec.time ? "T" + spec.time : "T00:00:00");
+    const target = new Date(raw);
+    if (isNaN(target.getTime())) return "timetool: неверная дата";
+    const now = new Date();
+    const ms = target.getTime() - now.getTime();
+    if (Math.abs(ms) < 60000) return `**${spec.name || "Событие"}**: сейчас!`;
+    const d = new Date(now.getFullYear(), 0, 0);
+    void d;
+    const days = Math.floor(Math.abs(ms) / 86400000);
+    const hours = Math.floor((Math.abs(ms) % 86400000) / 3600000);
+    const head = spec.name ? `**${spec.name}**` : `до ${fmtDateTime(target)}`;
+    return ms > 0
+      ? `${head}: осталось ${days > 0 ? days + " " + plural(days, "день", "дня", "дней") + " " : ""}${hours} ${plural(hours, "час", "часа", "часов")}`
+      : `${head}: прошло ${formatDiff(ms)} назад`;
+  }
+  if (type === "diff") {
+    const a = new Date(spec.a || ""), b = new Date(spec.b || "");
+    if (isNaN(a.getTime()) || isNaN(b.getTime())) return "timetool: укажите a и b (YYYY-MM-DD)";
+    return `разница: ${formatDiff(b.getTime() - a.getTime())}`;
+  }
+  if (type === "shift") {
+    const base = new Date(spec.base || "");
+    if (isNaN(base.getTime())) return "timetool: укажите base";
+    const value = parseInt(spec.value || "0") || 0;
+    const unit = spec.unit || "days";
+    const r = new Date(base);
+    const n = (spec.sign === "-" ? -1 : 1) * value;
+    if (unit === "months") r.setMonth(r.getMonth() + n);
+    else if (unit === "years") r.setFullYear(r.getFullYear() + n);
+    else {
+      const mult: Record<string, number> = { minutes: 60000, hours: 3600000, days: 86400000, weeks: 604800000 };
+      r.setTime(r.getTime() + n * (mult[unit] || 86400000));
+    }
+    return `${fmtDateTime(base)} ${spec.sign === "-" ? "−" : "+"} ${value} ${unit} = **${fmtDateTime(r)}**`;
+  }
+  return "timetool: неизвестный type (until/diff/shift/clock)";
+}
+
+function liveRender(el: HTMLElement, compute: () => string) {
+  const target = el.createSpan({ cls: "timetool-live" });
+  target.textContent = compute();
+  const iv = window.setInterval(() => {
+    if (!target.isConnected) { window.clearInterval(iv); return; }
+    const t = compute();
+    if (target.textContent !== t) target.textContent = t;
+  }, 1000);
 }
